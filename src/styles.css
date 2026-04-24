@@ -52,16 +52,9 @@ body,
   color: var(--dim);
 }
 
-.hint {
-  margin-left: auto;
-  color: var(--warm);
-  font-size: 12px;
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 0.4; }
-  50%      { opacity: 1; }
+.stage-wrap {
+  position: relative;
+  overflow: hidden;
 }
 
 .stage {
@@ -70,6 +63,45 @@ body,
   display: block;
   cursor: crosshair;
   touch-action: none;
+}
+
+.start-overlay {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(8, 12, 28, 0.6), rgba(5, 8, 20, 0.92));
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  animation: fade-in 0.4s ease-out both;
+}
+
+.start-big {
+  font-size: 28px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.start-sub {
+  font-size: 14px;
+  color: var(--warm);
+}
+
+.start-sub em {
+  color: #fff;
+  font-style: normal;
+  text-decoration: underline;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 .legend {

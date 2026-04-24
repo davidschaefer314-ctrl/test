@@ -26,12 +26,17 @@ const DRONES: { key: string; degree: number; label: string }[] = [
   { key: "c", degree: 4, label: "V" },
 ];
 
-// Map mouse x-ratio (0..1) to a continuous midi pitch in [LO, HI].
+const NOTE_NAMES = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
+
 function xToMidi(x: number): number {
   return LO + (HI - LO) * Math.max(0, Math.min(1, x));
 }
 function midiToX(midi: number): number {
   return (midi - LO) / (HI - LO);
+}
+function midiToName(midi: number): string {
+  const n = Math.round(midi);
+  return `${NOTE_NAMES[((n % 12) + 12) % 12]}${Math.floor(n / 12) - 1}`;
 }
 
 export default function Instrument() {
@@ -41,82 +46,67 @@ export default function Instrument() {
   const [scaleIdx, setScaleIdx] = useState(0);
   const [started, setStarted] = useState(false);
 
-  // Live mouse state (refs so we don't re-render on every move).
   const mouse = useRef({ x: 0.5, y: 0.5, down: false, inside: false });
   const pressedKeys = useRef<Set<string>>(new Set());
-  const droneStateRef = useRef<Map<string, number>>(new Map()); // keyId -> midi
+  const droneStateRef = useRef<Map<string, number>>(new Map());
   const scaleRef = useRef<Scale>(SCALES[0]);
   const trailRef = useRef<{ x: number; y: number; t: number }[]>([]);
+  const startedRef = useRef(false);
 
-  // Keep refs in sync.
   useEffect(() => {
     scaleRef.current = SCALES[scaleIdx];
   }, [scaleIdx]);
 
-  // Engine lazy-init on first interaction (required by browsers).
-  async function ensureStarted() {
+  async function startAudio() {
     if (!engineRef.current) engineRef.current = createEngine();
-    if (!started) {
+    if (!startedRef.current) {
       await engineRef.current.start();
+      startedRef.current = true;
       setStarted(true);
     }
   }
 
-  // ---- Main audio/render loop -------------------------------------------
+  // ---- Main render loop (audio params driven from refs, no state churn) -
   useEffect(() => {
     let raf = 0;
-    let lastFrame = performance.now();
     let lastMidi = xToMidi(mouse.current.x);
 
     const loop = () => {
-      const now = performance.now();
-      const dt = (now - lastFrame) / 1000;
-      lastFrame = now;
-
       const engine = engineRef.current;
       const scale = scaleRef.current;
 
       if (engine) {
-        // Base pitch from mouse X.
         let targetMidi = xToMidi(mouse.current.x);
 
-        // Quantize if space is held (strong pull toward nearest scale note).
         if (pressedKeys.current.has(" ")) {
           const snap = nearestScaleMidi(scale, targetMidi, LO, HI);
-          // Magnetic pull: 85% toward nearest scale note.
           targetMidi = targetMidi * 0.15 + snap * 0.85;
         }
 
-        // Glide faster when shift held.
-        const glide = pressedKeys.current.has("shift") ? 0.005 : 0.06;
+        const glide = pressedKeys.current.has("shift") ? 0.005 : 0.05;
         engine.setLeadPitch(targetMidi, glide);
-
-        // Brightness: inverted Y (top = bright).
         engine.setBrightness(1 - mouse.current.y);
-        // Vibrato: more vibrato toward bottom of frame.
         engine.setVibrato(mouse.current.y);
 
         lastMidi = targetMidi;
       }
 
-      // Trail: record recent playhead positions.
+      const now = performance.now();
       if (mouse.current.down && mouse.current.inside) {
         trailRef.current.push({ x: mouse.current.x, y: mouse.current.y, t: now });
       }
-      // Prune old trail points.
       const cutoff = now - 700;
       while (trailRef.current.length && trailRef.current[0].t < cutoff) trailRef.current.shift();
 
-      draw(dt, lastMidi);
+      draw(lastMidi);
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---- Drawing -----------------------------------------------------------
-  function draw(_dt: number, leadMidi: number) {
+  function draw(leadMidi: number) {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -131,7 +121,6 @@ export default function Instrument() {
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // Background gradient.
     const grad = ctx.createLinearGradient(0, 0, 0, H);
     grad.addColorStop(0, "#0b0f1d");
     grad.addColorStop(1, "#050814");
@@ -156,7 +145,7 @@ export default function Instrument() {
         ctx.font = "11px system-ui, sans-serif";
         ctx.textAlign = "center";
         const octave = Math.floor(n / 12) - 1;
-        ctx.fillText(`C${octave}`, x, H * 0.9);
+        ctx.fillText(`C${octave}`, x, H * 0.92);
       }
     }
 
@@ -179,9 +168,9 @@ export default function Instrument() {
       for (let k = 1; k < trailRef.current.length; k++) {
         const a = trailRef.current[k - 1];
         const b = trailRef.current[k];
-        const age = (now - b.t) / 700; // 0..1
-        ctx.strokeStyle = `rgba(180,220,255,${(1 - age) * 0.5})`;
-        ctx.lineWidth = 2;
+        const age = (now - b.t) / 700;
+        ctx.strokeStyle = `rgba(180,220,255,${(1 - age) * 0.7})`;
+        ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.moveTo(a.x * W, a.y * H);
         ctx.lineTo(b.x * W, b.y * H);
@@ -189,29 +178,45 @@ export default function Instrument() {
       }
     }
 
-    // Playhead.
+    // Vertical pitch cursor — always visible when mouse is over the canvas.
     const leadX = midiToX(leadMidi) * W;
     const leadY = mouse.current.y * H;
     const active = mouse.current.down;
+    if (mouse.current.inside || active) {
+      ctx.strokeStyle = active ? "rgba(180,220,255,0.5)" : "rgba(180,220,255,0.18)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(leadX, 0);
+      ctx.lineTo(leadX, H);
+      ctx.stroke();
+    }
+
+    // Playhead orb.
     const wobble = active
       ? Math.sin(performance.now() / (80 + (1 - mouse.current.y) * 120)) * mouse.current.y * 4
       : 0;
-
-    // Glow halo.
-    const haloR = active ? 28 : 14;
+    const haloR = active ? 44 : 16;
     const halo = ctx.createRadialGradient(leadX, leadY + wobble, 0, leadX, leadY + wobble, haloR);
-    halo.addColorStop(0, active ? "rgba(180,220,255,0.9)" : "rgba(180,220,255,0.4)");
+    halo.addColorStop(0, active ? "rgba(180,220,255,0.95)" : "rgba(180,220,255,0.35)");
     halo.addColorStop(1, "rgba(180,220,255,0)");
     ctx.fillStyle = halo;
     ctx.beginPath();
     ctx.arc(leadX, leadY + wobble, haloR, 0, Math.PI * 2);
     ctx.fill();
 
-    // Orb.
-    ctx.fillStyle = active ? "#eaf3ff" : "rgba(234,243,255,0.5)";
+    ctx.fillStyle = active ? "#ffffff" : "rgba(234,243,255,0.55)";
     ctx.beginPath();
-    ctx.arc(leadX, leadY + wobble, active ? 7 : 4, 0, Math.PI * 2);
+    ctx.arc(leadX, leadY + wobble, active ? 10 : 5, 0, Math.PI * 2);
     ctx.fill();
+
+    // Note-name label near the orb (visible whenever the mouse is over the canvas).
+    if (mouse.current.inside || active) {
+      ctx.fillStyle = active ? "#ffffff" : "rgba(234,243,255,0.65)";
+      ctx.font = `${active ? 18 : 13}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+      ctx.textAlign = "left";
+      const name = midiToName(leadMidi);
+      ctx.fillText(name, leadX + 14, leadY - 14 + wobble);
+    }
 
     // Harmony orbs for held pedals.
     if (active) {
@@ -219,14 +224,14 @@ export default function Instrument() {
         if (!pressedKeys.current.has(p.key)) continue;
         const harmMidi = stepScaleDegrees(scale, leadMidi, p.steps, LO, HI);
         const hx = midiToX(harmMidi) * W;
-        ctx.fillStyle = "rgba(255,210,150,0.85)";
+        ctx.fillStyle = "rgba(255,210,150,0.9)";
         ctx.beginPath();
-        ctx.arc(hx, leadY - 22 + wobble * 0.5, 5, 0, Math.PI * 2);
+        ctx.arc(hx, leadY - 28 + wobble * 0.5, 6, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = "rgba(255,210,150,0.3)";
+        ctx.strokeStyle = "rgba(255,210,150,0.4)";
         ctx.beginPath();
         ctx.moveTo(leadX, leadY + wobble);
-        ctx.lineTo(hx, leadY - 22 + wobble * 0.5);
+        ctx.lineTo(hx, leadY - 28 + wobble * 0.5);
         ctx.stroke();
       }
     }
@@ -235,7 +240,7 @@ export default function Instrument() {
     if (pressedKeys.current.has(" ")) {
       const snap = nearestScaleMidi(scale, leadMidi, LO, HI);
       const sx = midiToX(snap) * W;
-      ctx.strokeStyle = "rgba(180,255,200,0.8)";
+      ctx.strokeStyle = "rgba(180,255,200,0.85)";
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(sx, H * 0.1);
@@ -251,30 +256,31 @@ export default function Instrument() {
     ctx.fillRect(W - 110, 14, 96 * level, 4);
   }
 
-  // ---- Mouse handlers ----------------------------------------------------
-  function onMouseMove(e: React.MouseEvent) {
+  // ---- Pointer handlers --------------------------------------------------
+  function updatePointer(e: React.PointerEvent) {
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     mouse.current.x = (e.clientX - rect.left) / rect.width;
     mouse.current.y = (e.clientY - rect.top) / rect.height;
     mouse.current.inside = true;
   }
-  async function onMouseDown(e: React.MouseEvent) {
-    await ensureStarted();
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    mouse.current.x = (e.clientX - rect.left) / rect.width;
-    mouse.current.y = (e.clientY - rect.top) / rect.height;
-    mouse.current.down = true;
-    const midi = xToMidi(mouse.current.x);
-    engineRef.current?.leadNoteOn(midi);
+  function onPointerMove(e: React.PointerEvent) {
+    updatePointer(e);
   }
-  function onMouseUp() {
+  function onPointerDown(e: React.PointerEvent) {
+    if (!startedRef.current) return; // start overlay handles the first click
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    updatePointer(e);
+    mouse.current.down = true;
+    engineRef.current?.leadNoteOn(xToMidi(mouse.current.x));
+  }
+  function onPointerUp() {
+    if (!mouse.current.down) return;
     mouse.current.down = false;
     engineRef.current?.leadNoteOff();
     trailRef.current = [];
   }
-  function onMouseLeave() {
+  function onPointerLeave() {
     mouse.current.inside = false;
-    if (mouse.current.down) onMouseUp();
   }
 
   // ---- Keyboard handlers -------------------------------------------------
@@ -282,9 +288,8 @@ export default function Instrument() {
     const onKeyDown = async (e: KeyboardEvent) => {
       if (e.repeat) return;
       const key = e.key.toLowerCase();
-      await ensureStarted();
+      if (!startedRef.current) await startAudio();
 
-      // Scale switching 1..5.
       if (key >= "1" && key <= "5") {
         const idx = Number(key) - 1;
         if (idx < SCALES.length) setScaleIdx(idx);
@@ -293,20 +298,17 @@ export default function Instrument() {
 
       pressedKeys.current.add(key);
 
-      // Harmonizer pluck on keydown (follows current lead pitch).
       const pedal = PEDALS.find((p) => p.key === key);
       if (pedal && engineRef.current) {
-        const lead = xToMidi(mouse.current.x);
-        const target = stepScaleDegrees(scaleRef.current, lead, pedal.steps, LO, HI);
-        engineRef.current.pluck(target, mouse.current.down ? 0.7 : 0.35);
+        const leadPitch = xToMidi(mouse.current.x);
+        const target = stepScaleDegrees(scaleRef.current, leadPitch, pedal.steps, LO, HI);
+        engineRef.current.pluck(target, mouse.current.down ? 0.7 : 0.4);
       }
 
-      // Drone latch on keydown.
       const drone = DRONES.find((d) => d.key === key);
       if (drone && engineRef.current && !droneStateRef.current.has(drone.key)) {
         const scale = scaleRef.current;
         const notes = scaleMidiNotes(scale, scale.tonic - 12, scale.tonic + 1);
-        // Pick the scale degree as an offset in the scale itself, at the lower octave.
         const target =
           notes[Math.min(drone.degree, notes.length - 1)] ??
           scale.tonic + scale.intervals[drone.degree % scale.intervals.length];
@@ -329,7 +331,6 @@ export default function Instrument() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const scale = useMemo(() => SCALES[scaleIdx], [scaleIdx]);
@@ -342,21 +343,36 @@ export default function Instrument() {
           scale: <strong>{scale.name}</strong>{" "}
           <span className="dim">(press 1–5 to change)</span>
         </div>
-        {!started && <div className="hint">click the canvas to start audio</div>}
       </header>
 
-      <canvas
-        ref={canvasRef}
-        className="stage"
-        onMouseMove={onMouseMove}
-        onMouseDown={onMouseDown}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseLeave}
-      />
+      <div className="stage-wrap">
+        <canvas
+          ref={canvasRef}
+          className="stage"
+          onPointerMove={onPointerMove}
+          onPointerDown={onPointerDown}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onPointerLeave={onPointerLeave}
+        />
+        {!started && (
+          <button
+            className="start-overlay"
+            onClick={async () => {
+              await startAudio();
+            }}
+          >
+            <div className="start-big">click to start</div>
+            <div className="start-sub">
+              then press & <em>hold</em> the mouse button on the canvas and drag
+            </div>
+          </button>
+        )}
+      </div>
 
       <footer className="legend">
         <div>
-          <kbd>mouse</kbd> hold + drag → glissando · <kbd>y-axis</kbd> brightness / vibrato
+          <kbd>mouse</kbd> press + hold + drag → glissando · <kbd>y-axis</kbd> brightness / vibrato
         </div>
         <div>
           <kbd>space</kbd> quantize magnet · <kbd>shift</kbd> fast glide
