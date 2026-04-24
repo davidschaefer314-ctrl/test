@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - claude/musical-instrument-prototype-zG2yc
+      - claude/pedal-steel-trackpad-BJVVC
   workflow_dispatch:
 
 permissions:
