@@ -3,10 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Abstract Pedal Steel</title>
+    <title>Pedal Steel</title>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <div id="app">
+      <header class="hud">
+        <div class="title">pedal steel · E9</div>
+        <div id="status" class="status"></div>
+        <div id="hint" class="hint">click the pad to start audio</div>
+      </header>
+      <div id="pad" class="pad" tabindex="0">
+        <canvas id="viz"></canvas>
+      </div>
+      <footer class="legend">
+        <div><kbd>trackpad Y</kbd> bar position (pitch) · <kbd>X</kbd> bar slant</div>
+        <div><kbd>A S D F G H J K L ;</kbd> strings 10→1 (press to pluck)</div>
+        <div><kbd>1 2 3</kbd> A/B/C pedals · <kbd>4 5</kbd> LKL/LKR · <kbd>6 7</kbd> RKL/RKR</div>
+        <div><kbd>click</kbd> pluck held strings (all 10 if none) · <kbd>Q</kbd> quantize · <kbd>[ ]</kbd> snap strength</div>
+      </footer>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
